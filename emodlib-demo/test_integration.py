@@ -9,6 +9,7 @@ This test verifies the complete workflow:
 5. Align and evaluate simulated vs observed data
 """
 
+import polars as pl
 from models.emod_malaria import EmodMalariaModel
 from targets.prevalence_by_age import prevalence_by_age_target
 from modelops_calabaria import ParameterSet
@@ -45,56 +46,57 @@ def main():
     print(f"   Simulated prevalence (first 5 ages):")
     print(simulated.head(5))
 
-    # 3. Load target (call the unwrapped function directly)
+    # 3. Load target by calling the decorated function
     print("\n3. Loading target...")
-    # The decorator wraps the function, so we need to call it differently
-    # For testing, we'll just instantiate the Target directly
-    import polars as pl
-    from modelops_calabaria.core.target import Target
-    from modelops_calabaria.core.alignment import JoinAlignment
-    from targets.prevalence_by_age import replicate_mean_kl_divergence
+    from targets.prevalence_by_age import prevalence_by_age_target
 
-    observed_data = pl.read_csv('data/observed_prevalence.csv')
-    target = Target(
-        model_output="prevalence_by_age",
-        data=observed_data,
-        alignment=JoinAlignment(on_cols="age_years", mode="exact"),
-        evaluation=replicate_mean_kl_divergence(col="prevalence"),
-        weight=1.0
-    )
+    target = prevalence_by_age_target()
     print(f"   ✓ Target loaded: {target.model_output}")
     print(f"   ✓ Observed data: {target.data.shape[0]} age groups")
-    print(f"   Observed prevalence (first 5 ages):")
+    print(f"   Observed data (first 5 ages):")
     print(target.data.head(5))
 
-    # 4. Align data (mimicking what calabaria does)
-    print("\n4. Aligning simulated and observed data...")
-    # Join on age_years to align
-    aligned = target.data.join(simulated, on='age_years', how='inner', suffix='_sim')
-    print(f"   ✓ Aligned {aligned.shape[0]} age groups")
+    # 4. Evaluate target against simulation
+    print("\n4. Evaluating target...")
+    # The target.evaluate() method expects replicated simulation outputs
+    # Format: Sequence[Mapping[output_name, DataFrame]]
+    # Since we have one replicate, we pass a list with one dict
+    replicated_outputs = [
+        {
+            'prevalence_by_age': simulated
+        }
+    ]
 
-    # 5. Evaluate
-    print("\n5. Evaluating loss...")
-    observed_aligned = aligned.select(['age_years', 'prevalence'])
-    simulated_aligned = aligned.select(['age_years', 'prevalence_sim']).rename({'prevalence_sim': 'prevalence'})
+    eval_result = target.evaluate(replicated_outputs)
+    print(f"   ✓ Binomial NLL loss = {eval_result.loss:.6f}")
+    print(f"   ✓ Loss breakdown:")
+    print(f"      - Used {eval_result.aligned_data.data.shape[0]} data points")
 
-    loss = target.evaluation(observed_aligned, simulated_aligned)
-    print(f"   ✓ KL divergence loss = {loss:.6f}")
+    # 5. Show sample comparison
+    print("\n5. Sample comparison (first 5 age groups):")
+    # Manually join for display
+    simulated_renamed = simulated.rename({'prevalence': 'sim_prevalence'})
+    joined = target.data.join(simulated_renamed, on='age_years', how='inner')
 
-    # 6. Show comparison
-    print("\n6. Comparison summary:")
-    comparison = aligned.select([
+    comparison = joined.select([
         'age_years',
-        'prevalence',  # observed
-        'prevalence_sim',  # simulated
-    ])
+        pl.col('number_positive'),
+        pl.col('number_total'),
+        (pl.col('number_positive') / pl.col('number_total')).alias('obs_prevalence'),
+        pl.col('sim_prevalence'),
+    ]).head(5)
     print(comparison)
+
+    print("\n   Target uses BinomialNLL to compare:")
+    print("   - sim_prevalence (probability p from simulation)")
+    print("   - number_positive (x successes from observations)")
+    print("   - number_total (n trials from observations)")
 
     print("\n" + "=" * 60)
     print("✓ Integration test passed!")
     print("=" * 60)
-    print(f"\nLoss value: {loss:.6f}")
-    print("The model and target are compatible and ready for calibration.")
+    print(f"\nFinal loss: {eval_result.loss:.6f}")
+    print("The model and target are fully integrated and ready for calibration.")
 
     return 0
 

@@ -71,10 +71,6 @@ def main():
         print("\n" + "=" * 60)
         print("✓ All tests passed!")
         print("=" * 60)
-        print("\nNext steps:")
-        print("1. Run: mops-bundle add .")
-        print("2. Run: mops-bundle manifest")
-        print("3. Run: mops-bundle push")
 
     except Exception as e:
         print(f"\n✗ Test failed: {e}")
