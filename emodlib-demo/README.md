@@ -1,74 +1,62 @@
 # emodlib-demo
 
-A ModelOps bundle project demonstrating EMOD malaria model calibration using prevalence-by-age targets.
+EMOD malaria model calibration example using ModelOps and Calabaria.
 
-## Overview
+## Quick Start
 
-This example adapts the seasonal challenge scenario from emod-demo to work with ModelOps/Calabaria. It demonstrates:
+```bash
+# 1. Install dependencies
+uv sync
 
-- EMOD `IntrahostComponent` malaria model integration with ModelOps
-- Prevalence-by-age target calibration using KL divergence
-- Thread-safe parameter management for parallel execution
-- Pandas/Polars data processing without xarray dependency
+# 2. Generate study with Sobol sampling
+uv run python -m modelops_calabaria.cli sampling sobol \
+  "models/emod_malaria.py:EmodMalariaModel" \
+  --scenario baseline \
+  --n-samples 64 \
+  --n-replicates 2 \
+  --seed 42 \
+  --scramble \
+  --targets "targets.prevalence_by_age:prevalence_by_age_target" \
+  --output study.json
 
-## Model
+# 3. Manually fix study.json outputs field (temporary workaround)
+sed -i '' 's/"outputs": null/"outputs": ["prevalence_by_age"]/' study.json
 
-The `EmodMalariaModel` simulates multiple individuals exposed to seasonal malaria transmission:
+# 4. Push bundle to registry
+mops bundle push
 
-- **Parameters**: `Antigen_Switch_Rate`, `Falciparum_PfEMP1_Variants`, `Max_Individual_Infections`
-- **Fixed Config**: Population size, duration, monthly EIR pattern
-- **Output**: Prevalence by age (year) averaged across individuals and seasons
+# 5. Submit job
+mops jobs submit study.json
 
-## Target
-
-The `prevalence_by_age` target compares simulated vs observed prevalence using KL divergence loss.
+# 6. Monitor execution
+mops jobs list
+mops jobs status <job-id>
+kubectl -n modelops-dask-dev logs job/<job-id>
+```
 
 ## Project Structure
 
 ```
 emodlib-demo/
-├── pyproject.toml              # Project configuration with test PyPI index
-├── README.md                   # This file
-├── models/
-│   ├── __init__.py
-│   └── emod_malaria.py        # EMOD malaria model implementation
-├── targets/
-│   ├── __init__.py
-│   └── prevalence_by_age.py   # Prevalence target with KL divergence
-├── data/
-│   └── observed_prevalence.csv # Synthetic observed data
-└── generate_observed_data.py   # Script to generate synthetic data
-
+├── pyproject.toml              # Dependencies (emodlib>=0.0.4 from test.pypi.org)
+├── models/emod_malaria.py      # EmodMalariaModel with @model_output decorator
+├── targets/prevalence_by_age.py # Target with KL divergence loss
+├── data/observed_prevalence.csv # Observed prevalence data
+└── .modelops-bundle/           # Bundle registry configuration
 ```
 
-## Quick Start
+## Model
 
-```bash
-# Install dependencies (requires test PyPI for emodlib)
-uv sync
+**EmodMalariaModel** simulates individuals exposed to seasonal malaria transmission:
+- **Parameters**: Antigen_Switch_Rate, Falciparum_PfEMP1_Variants, Max_Individual_Infections
+- **Output**: prevalence_by_age (prevalence by year, averaged across individuals)
+- **Target**: KL divergence loss comparing simulated vs observed prevalence
 
-# Generate synthetic observed data
-uv run python generate_observed_data.py
+## Current Status
 
-# Test model locally
-uv run python -c "from models.emod_malaria import EmodMalariaModel; model = EmodMalariaModel(); print(model)"
+✅ Bundle building and pushing works
+✅ Dependencies install on workers
+✅ Simulations execute successfully
+❌ **Model outputs not being extracted** - `@model_output` decorated methods not called
 
-# Add to bundle registry
-mops-bundle add .
-
-# Create manifest
-mops-bundle manifest
-
-# Push to registry
-mops-bundle push
-```
-
-## Thread Safety Note
-
-EMOD's `IntrahostComponent.set_params()` modifies global state. This model handles thread safety by:
-
-1. Calling `set_params()` once per trial at the start of `run_sim()`
-2. Creating all individual instances after parameter configuration
-3. Relying on Dask's process-based parallelism for worker isolation
-
-This ensures each trial runs with the correct parameters without race conditions.
+See `PROGRESS.md` for detailed debugging notes.

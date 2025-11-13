@@ -9,8 +9,10 @@ import numpy as np
 import polars as pl
 import modelops_calabaria as cb
 from modelops_calabaria.core.target import Target
-from modelops_calabaria.core.alignment import JoinAlignment
-from modelops_calabaria.core.evaluation import EvaluationStrategy
+from modelops_calabaria.core.alignment import JoinAlignment, AlignedData, LOSS_COL
+from modelops_calabaria.core.evaluation.composable import Evaluator
+from modelops_calabaria.core.evaluation.aggregate import MeanAcrossReplicates
+from modelops_calabaria.core.evaluation.reduce import MeanReducer
 
 
 def kl_divergence(p: np.ndarray, q: np.ndarray, epsilon: float = 1e-10) -> float:
@@ -39,63 +41,54 @@ def kl_divergence(p: np.ndarray, q: np.ndarray, epsilon: float = 1e-10) -> float
     return float(np.sum(p * np.log(p / q)))
 
 
-class KLDivergenceEvaluation(EvaluationStrategy):
-    """
-    Evaluation strategy using KL divergence loss.
+class KLDivergenceLoss:
+    """Loss function that computes KL divergence per aligned row."""
 
-    This strategy computes KL divergence between observed and simulated
-    prevalence values after averaging across replicates.
-    """
-
-    def __init__(self, prevalence_col: str = "prevalence"):
+    def __init__(self, col: str):
         """
-        Initialize KL divergence evaluation.
+        Initialize KL divergence loss.
 
         Args:
-            prevalence_col: Name of the prevalence column to evaluate
+            col: Name of the column to evaluate
         """
-        self.prevalence_col = prevalence_col
+        self.col = col
 
-    def __call__(self, observed: pl.DataFrame, simulated: pl.DataFrame) -> float:
+    def compute(self, aligned: AlignedData) -> AlignedData:
         """
-        Compute KL divergence loss between observed and simulated data.
+        Compute KL divergence loss for aligned data.
+
+        This computes KL(obs || sim) for each row and adds it as a loss column.
 
         Args:
-            observed: Observed data (already joined with simulated)
-            simulated: Simulated data (potentially multiple replicates)
+            aligned: Aligned observed and simulated data
 
         Returns:
-            KL divergence (lower is better, 0 = perfect match)
+            AlignedData with loss column added
         """
-        # If simulated has multiple replicates, average them first
-        # The alignment should have already joined on age_years
-        if simulated.height > observed.height:
-            # Average across replicates (group by age_years if present)
-            if 'age_years' in simulated.columns:
-                simulated = simulated.group_by('age_years').agg(
-                    pl.col(self.prevalence_col).mean()
-                ).sort('age_years')
-            else:
-                # If no grouping column, just take mean
-                simulated = simulated.select(
-                    pl.col(self.prevalence_col).mean()
-                )
+        # Get observed and simulated columns
+        obs_col = aligned.get_obs_col(self.col)
+        sim_col = aligned.get_sim_col(self.col)
 
-        # Extract prevalence values
-        # After join alignment, both dataframes should have matching rows
-        observed_prev = observed[self.prevalence_col].to_numpy()
-        simulated_prev = simulated[self.prevalence_col].to_numpy()
+        # Compute element-wise KL divergence contribution
+        # For KL(p||q) = sum(p * log(p/q)), each element contributes p_i * log(p_i / q_i)
+        epsilon = 1e-10
+        obs_clipped = obs_col.clip(epsilon, 1.0)
+        sim_clipped = sim_col.clip(epsilon, 1.0)
 
-        # Ensure same length (alignment should guarantee this)
-        n = min(len(observed_prev), len(simulated_prev))
-        observed_prev = observed_prev[:n]
-        simulated_prev = simulated_prev[:n]
+        # Compute KL divergence contribution per row
+        kl_contrib = obs_clipped * (obs_clipped / sim_clipped).log()
 
-        # Compute KL divergence
-        return kl_divergence(observed_prev, simulated_prev)
+        # Add loss column
+        aligned_with_loss = aligned.data.with_columns(kl_contrib.alias(LOSS_COL))
+
+        return AlignedData(
+            data=aligned_with_loss,
+            on_cols=aligned.on_cols,
+            replicate_col=aligned.replicate_col,
+        )
 
 
-def replicate_mean_kl_divergence(col: str = "prevalence") -> KLDivergenceEvaluation:
+def replicate_mean_kl_divergence(col: str = "prevalence") -> Evaluator:
     """
     Create a KL divergence evaluation strategy that averages replicates first.
 
@@ -105,9 +98,13 @@ def replicate_mean_kl_divergence(col: str = "prevalence") -> KLDivergenceEvaluat
         col: Name of the prevalence column
 
     Returns:
-        KLDivergenceEvaluation instance
+        Evaluator configured with KL divergence loss
     """
-    return KLDivergenceEvaluation(prevalence_col=col)
+    return Evaluator(
+        aggregator=MeanAcrossReplicates([col]),
+        loss_fn=KLDivergenceLoss(col=col),
+        reducer=MeanReducer(),
+    )
 
 
 @cb.calibration_target(
