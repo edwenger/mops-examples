@@ -197,10 +197,12 @@ class EmodMalariaModel(BaseModel):
         Returns:
             Dictionary containing all simulation parameters and configuration
         """
+        # Convert to native Python types to ensure C++ compatibility
+        # (framework may deserialize as numpy types which pybind11 rejects)
         return {
-            'antigen_switch_rate': params['Antigen_Switch_Rate'],
-            'pfemp1_variants': params['Falciparum_PfEMP1_Variants'],
-            'max_infections': params['Max_Individual_Infections'],
+            'antigen_switch_rate': float(params['Antigen_Switch_Rate']),
+            'pfemp1_variants': int(params['Falciparum_PfEMP1_Variants']),
+            'max_infections': int(params['Max_Individual_Infections']),
             'n_people': self.config.n_people,
             'duration': self.config.duration,
             'monthly_eirs': self.config.monthly_eirs,
@@ -224,14 +226,29 @@ class EmodMalariaModel(BaseModel):
         """
         # CRITICAL: Configure global IntrahostComponent parameters ONCE
         # All individuals in this trial will share these parameters
-        IntrahostComponent.set_params({
-            'Run_Number': seed,  # Initialize global RNG
+
+        # DEBUG: Log all parameter types and values before passing to C++
+        params_dict = {
+            'Run_Number': int(seed),  # Initialize global RNG (ensure native int)
             'infection_params': {
                 'Antigen_Switch_Rate': state['antigen_switch_rate']
             },
             'Falciparum_PfEMP1_Variants': state['pfemp1_variants'],
             'Max_Individual_Infections': state['max_infections'],
-        })
+        }
+
+        def print_params(d, indent=0):
+            for key, val in d.items():
+                if isinstance(val, dict):
+                    print(f"[DEBUG] {'  ' * indent}{key}:")
+                    print_params(val, indent + 1)
+                else:
+                    print(f"[DEBUG] {'  ' * indent}{key}={val}, type={type(val)}")
+
+        print(f"[DEBUG] About to call set_params with:")
+        print_params(params_dict)
+
+        IntrahostComponent.set_params(params_dict)
 
         # Set NumPy random seed for challenge stochasticity
         np.random.seed(seed)
