@@ -5,13 +5,12 @@ This model simulates multiple individuals exposed to seasonal malaria transmissi
 using the emodlib IntrahostComponent. It computes prevalence-by-age as the target
 metric for calibration.
 
-Thread Safety:
---------------
-IntrahostComponent.set_params() modifies global static state in C++. This model
-is safe for parallel execution because:
-1. set_params() is called ONCE per trial at the start of run_sim()
-2. All individuals in a trial share the same parameters (correct behavior)
-3. Dask workers use process-based parallelism (isolated memory)
+Thread Safety (emodlib >= 0.1.0):
+---------------------------------
+This model uses the instance-based MalariaConfig system for thread-safe parallel
+simulations. Each trial creates its own config via create_config(), which is then
+passed to IntrahostComponent.create(config). This eliminates global state and
+enables safe parallel execution across Dask workers.
 """
 
 import datetime as dt
@@ -21,7 +20,7 @@ import numpy as np
 import pandas as pd
 import polars as pl
 
-from emodlib.malaria import IntrahostComponent
+from emodlib.malaria import IntrahostComponent, create_config
 import modelops_calabaria as cb
 from modelops_calabaria import BaseModel, ParameterSpace, ParameterSet, ParameterSpec, model_output
 
@@ -76,6 +75,7 @@ def month_index_from_day(t: int) -> int:
 
 
 def monthly_eir_challenge(
+    config,
     duration: int,
     monthly_eirs: tuple,
     updates_per_day: int = 2,
@@ -87,10 +87,8 @@ def monthly_eir_challenge(
     daily exposure based on monthly EIR values. The individual ages from 0 to
     duration days over the simulation.
 
-    IMPORTANT: IntrahostComponent.set_params() must be called BEFORE this function
-    to configure global parameters (Antigen_Switch_Rate, PfEMP1_Variants, etc.)
-
     Args:
+        config: MalariaConfig instance (thread-safe configuration)
         duration: Simulation duration in days
         monthly_eirs: Tuple of 12 monthly EIR values
         updates_per_day: Number of intrahost updates per day
@@ -98,8 +96,8 @@ def monthly_eir_challenge(
     Returns:
         DataFrame with columns: parasite_density, gametocyte_density, fever_temperature
     """
-    # Create new instance (uses global params set by set_params())
-    ic = IntrahostComponent.create()
+    # Create new instance with config (thread-safe, no global state)
+    ic = IntrahostComponent.create(config)
     ic.susceptibility.age = 0.0  # Start as newborn
 
     # Storage for daily results
@@ -213,9 +211,8 @@ class EmodMalariaModel(BaseModel):
         """
         Run malaria simulation for N individuals.
 
-        CRITICAL: This method calls IntrahostComponent.set_params() to configure
-        global state ONCE before creating any instances. This is thread-safe
-        because Dask workers run in isolated processes.
+        Creates a thread-safe config instance for this trial and passes it to
+        all individual simulations.
 
         Args:
             state: Simulation state from build_sim
@@ -224,12 +221,9 @@ class EmodMalariaModel(BaseModel):
         Returns:
             Dictionary containing raw results from all individuals
         """
-        # CRITICAL: Configure global IntrahostComponent parameters ONCE
-        # All individuals in this trial will share these parameters
-
-        # DEBUG: Log all parameter types and values before passing to C++
+        # Create thread-safe config instance for this trial
         params_dict = {
-            'Run_Number': int(seed),  # Initialize global RNG (ensure native int)
+            'Run_Number': int(seed),
             'infection_params': {
                 'Antigen_Switch_Rate': state['antigen_switch_rate']
             },
@@ -237,26 +231,16 @@ class EmodMalariaModel(BaseModel):
             'Max_Individual_Infections': state['max_infections'],
         }
 
-        def print_params(d, indent=0):
-            for key, val in d.items():
-                if isinstance(val, dict):
-                    print(f"[DEBUG] {'  ' * indent}{key}:")
-                    print_params(val, indent + 1)
-                else:
-                    print(f"[DEBUG] {'  ' * indent}{key}={val}, type={type(val)}")
-
-        print(f"[DEBUG] About to call set_params with:")
-        print_params(params_dict)
-
-        IntrahostComponent.set_params(params_dict)
+        config = create_config(params_dict)
 
         # Set NumPy random seed for challenge stochasticity
         np.random.seed(seed)
 
-        # Now run all individuals (they use the same global params)
+        # Run all individuals with the same config (thread-safe)
         individual_results = []
         for individual in range(state['n_people']):
             df = monthly_eir_challenge(
+                config=config,
                 duration=state['duration'],
                 monthly_eirs=state['monthly_eirs'],
                 updates_per_day=state['updates_per_day'],
