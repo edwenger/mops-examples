@@ -1,0 +1,46 @@
+{
+  "model": "models.emod_malaria",
+  "scenario": "baseline",
+  "parameter_sets": [
+    {
+      "params": {
+        "Antigen_Switch_Rate": 2.1835958980955183e-08,
+        "Falciparum_PfEMP1_Variants": 1070,
+        "Max_Individual_Infections": 6
+      }
+    },
+    {
+      "params": {
+        "Antigen_Switch_Rate": 4.355577000044286e-08,
+        "Falciparum_PfEMP1_Variants": 806,
+        "Max_Individual_Infections": 5
+      }
+    },
+    {
+      "params": {
+        "Antigen_Switch_Rate": 2.9106814802624288e-08,
+        "Falciparum_PfEMP1_Variants": 857,
+        "Max_Individual_Infections": 6
+      }
+    },
+    {
+      "params": {
+        "Antigen_Switch_Rate": 7.2748931627720596e-09,
+        "Falciparum_PfEMP1_Variants": 667,
+        "Max_Individual_Infections": 3
+      }
+    }
+  ],
+  "sampling_method": "sobol",
+  "n_replicates": 1,
+  "outputs": null,
+  "metadata": {
+    "n_samples": 4,
+    "scramble": true,
+    "seed": 42,
+    "model_class": "models/emod_malaria.py:EmodMalariaModel"
+  },
+  "targets": [
+    "targets.prevalence_by_age:prevalence_by_age_target"
+  ]
+}

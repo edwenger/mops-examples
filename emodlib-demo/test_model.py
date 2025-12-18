@@ -37,7 +37,7 @@ def test_model_execution():
     print(f"✓ Created test parameters")
 
     # Build simulation state
-    state = model.build_sim(params, {})
+    state = model.build_sim(params, model.base_config)
     print(f"✓ Built simulation state")
     print(f"  - n_people: {state['n_people']}")
     print(f"  - duration: {state['duration']} days")

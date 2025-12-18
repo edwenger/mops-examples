@@ -1,2 +1,10 @@
 # ModelOps Bundle
 .modelops-bundle/
+
+# Generated study files (except study_small.json for testing)
+study.json
+
+# Python
+__pycache__/
+*.pyc
+.venv/
