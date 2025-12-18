@@ -14,25 +14,17 @@ enables safe parallel execution across Dask workers.
 """
 
 import datetime as dt
-from dataclasses import dataclass
-from typing import Optional, Dict, Any, Mapping
+from typing import Dict, Any, Mapping
 import numpy as np
 import pandas as pd
 import polars as pl
 
 from emodlib.malaria import IntrahostComponent, create_config
 import modelops_calabaria as cb
-from modelops_calabaria import BaseModel, ParameterSpace, ParameterSet, ParameterSpec, model_output
-
-
-@dataclass(frozen=True)
-class MalariaConfig:
-    """Fixed configuration for malaria simulations."""
-    n_people: int = 10
-    duration: int = 20 * 365  # 20 years in days
-    updates_per_day: int = 2
-    # Rafin Marke seasonal pattern (example from seasonal_challenge.py)
-    monthly_eirs: tuple = (1, 1, 0.5, 1, 1, 2, 3.875, 7.75, 15.0, 3.875, 1, 1)
+from modelops_calabaria import (
+    BaseModel, ParameterSpace, ParameterSet, ParameterSpec,
+    ConfigurationSpace, ConfigSpec, model_output
+)
 
 
 def surface_area_biting_function(age_days: float) -> float:
@@ -140,46 +132,41 @@ class EmodMalariaModel(BaseModel):
     by age (year) as the primary calibration target.
     """
 
-    def __init__(self, space: Optional[ParameterSpace] = None):
-        """Initialize the malaria model with parameter space."""
-        if space is None:
-            space = self.parameter_space()
-        self.config = MalariaConfig()
-        super().__init__(space, base_config={})
+    # Class-level PARAMS required by modelops_calabaria BaseModel
+    PARAMS = ParameterSpace((
+        ParameterSpec(
+            "Antigen_Switch_Rate",
+            5e-10, 5e-8,
+            "float",
+            doc="Rate of antigenic variation (log scale)",
+        ),
+        ParameterSpec(
+            "Falciparum_PfEMP1_Variants",
+            500, 1200,
+            "int",
+            doc="Number of distinct PfEMP1 variants",
+        ),
+        ParameterSpec(
+            "Max_Individual_Infections",
+            3, 7,
+            "int",
+            doc="Maximum concurrent infections per individual",
+        ),
+    ))
 
-    @staticmethod
-    def parameter_space() -> ParameterSpace:
-        """
-        Define the parameter space for malaria model calibration.
+    # Configuration space for fixed simulation settings
+    CONFIG = ConfigurationSpace((
+        ConfigSpec("n_people", default=10, doc="Number of individuals to simulate"),
+        ConfigSpec("duration", default=20 * 365, doc="Simulation duration in days (20 years)"),
+        ConfigSpec("updates_per_day", default=2, doc="Number of intrahost updates per day"),
+        # Rafin Marke seasonal pattern (example from seasonal_challenge.py)
+        ConfigSpec("monthly_eirs", default=(1, 1, 0.5, 1, 1, 2, 3.875, 7.75, 15.0, 3.875, 1, 1),
+                   doc="Tuple of 12 monthly EIR values"),
+    ))
 
-        These parameters control within-host infection dynamics:
-        - Antigen_Switch_Rate: Rate of antigenic variation within infections
-        - Falciparum_PfEMP1_Variants: Number of distinct PfEMP1 variants
-        - Max_Individual_Infections: Maximum concurrent infections per individual
-
-        Returns:
-            ParameterSpace with three calibration parameters
-        """
-        return ParameterSpace([
-            ParameterSpec(
-                "Antigen_Switch_Rate",
-                5e-10, 5e-8,
-                "float",
-                doc="Rate of antigenic variation (log scale)",
-            ),
-            ParameterSpec(
-                "Falciparum_PfEMP1_Variants",
-                500, 1200,
-                "int",
-                doc="Number of distinct PfEMP1 variants",
-            ),
-            ParameterSpec(
-                "Max_Individual_Infections",
-                3, 7,
-                "int",
-                doc="Maximum concurrent infections per individual",
-            ),
-        ])
+    def __init__(self):
+        """Initialize the malaria model."""
+        super().__init__()
 
     def build_sim(self, params: ParameterSet, config: Mapping[str, Any]) -> Dict[str, Any]:
         """
@@ -190,7 +177,7 @@ class EmodMalariaModel(BaseModel):
 
         Args:
             params: Parameter set from optimization algorithm
-            config: Additional configuration (unused, for compatibility)
+            config: Configuration from base_config (may be patched by scenarios)
 
         Returns:
             Dictionary containing all simulation parameters and configuration
@@ -201,10 +188,10 @@ class EmodMalariaModel(BaseModel):
             'antigen_switch_rate': float(params['Antigen_Switch_Rate']),
             'pfemp1_variants': int(params['Falciparum_PfEMP1_Variants']),
             'max_infections': int(params['Max_Individual_Infections']),
-            'n_people': self.config.n_people,
-            'duration': self.config.duration,
-            'monthly_eirs': self.config.monthly_eirs,
-            'updates_per_day': self.config.updates_per_day,
+            'n_people': int(config['n_people']),
+            'duration': int(config['duration']),
+            'monthly_eirs': config['monthly_eirs'],
+            'updates_per_day': int(config['updates_per_day']),
         }
 
     def run_sim(self, state: Dict[str, Any], seed: int = 42) -> Dict[str, Any]:
@@ -222,35 +209,45 @@ class EmodMalariaModel(BaseModel):
             Dictionary containing raw results from all individuals
         """
         # Create thread-safe config instance for this trial
+        # Ensure native Python types for pybind11 compatibility
+        # (framework serialization may convert to numpy types)
+        # Note: Run_Number must fit in int32 for C++ bindings
         params_dict = {
-            'Run_Number': int(seed),
+            'Run_Number': int(seed) % (2**31),
             'infection_params': {
-                'Antigen_Switch_Rate': state['antigen_switch_rate']
+                'Antigen_Switch_Rate': float(state['antigen_switch_rate'])
             },
-            'Falciparum_PfEMP1_Variants': state['pfemp1_variants'],
-            'Max_Individual_Infections': state['max_infections'],
+            'Falciparum_PfEMP1_Variants': int(state['pfemp1_variants']),
+            'Max_Individual_Infections': int(state['max_infections']),
         }
 
         config = create_config(params_dict)
 
         # Set NumPy random seed for challenge stochasticity
-        np.random.seed(seed)
+        # Use modulo to ensure seed fits in expected range
+        np.random.seed(int(seed) % (2**32))
+
+        # Extract values with native Python types for pybind11 compatibility
+        n_people = int(state['n_people'])
+        duration = int(state['duration'])
+        updates_per_day = int(state['updates_per_day'])
+        monthly_eirs = tuple(state['monthly_eirs'])
 
         # Run all individuals with the same config (thread-safe)
         individual_results = []
-        for individual in range(state['n_people']):
+        for individual in range(n_people):
             df = monthly_eir_challenge(
                 config=config,
-                duration=state['duration'],
-                monthly_eirs=state['monthly_eirs'],
-                updates_per_day=state['updates_per_day'],
+                duration=duration,
+                monthly_eirs=monthly_eirs,
+                updates_per_day=updates_per_day,
             )
             individual_results.append(df)
 
         return {
             'individual_results': individual_results,
-            'n_people': state['n_people'],
-            'duration': state['duration'],
+            'n_people': n_people,
+            'duration': duration,
         }
 
     @model_output("prevalence_by_age")
