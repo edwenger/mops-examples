@@ -42,6 +42,7 @@ mops jobs submit study.json
 models/emod_malaria.py       # EmodMalariaModel (BaseModel subclass)
 targets/prevalence_by_age.py # LossTarget with MSE evaluator
 data/observed_prevalence.csv # Observed prevalence by age
+generate_observed_data.py    # Script to regenerate observed data
 study_small.json             # Pre-generated study for local testing
 ```
 
